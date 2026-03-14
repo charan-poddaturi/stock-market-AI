@@ -197,6 +197,71 @@ class AlphaVantageConnector:
             return pd.DataFrame()
 
 
+class PolygonConnector:
+    """Polygon.io real-time data connector."""
+    BASE_URL = "https://api.polygon.io"
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or settings.polygon_key
+        self.enabled = bool(self.api_key and self.api_key not in ("demo", None))
+
+    def fetch_snapshot(self, ticker: str) -> Dict[str, Any]:
+        """Fetch real-time snapshot (last trade, OHLCV, prev close) from Polygon."""
+        if not self.enabled:
+            return {}
+        try:
+            url = f"{self.BASE_URL}/v2/snapshot/locale/us/markets/stocks/tickers/{ticker.upper()}"
+            resp = requests.get(url, params={"apiKey": self.api_key}, timeout=10)
+            data = resp.json()
+            if data.get("status") != "OK":
+                logger.warning(f"Polygon snapshot error for {ticker}: {data.get('error', '')}")
+                return {}
+            ticker_data = data.get("ticker", {})
+            day = ticker_data.get("day", {})
+            prev = ticker_data.get("prevDay", {})
+            last_trade = ticker_data.get("lastTrade", {})
+            return {
+                "open": day.get("o"),
+                "high": day.get("h"),
+                "low": day.get("l"),
+                "close": day.get("c"),
+                "volume": day.get("v"),
+                "vwap": day.get("vw"),
+                "prev_close": prev.get("c"),
+                "last_price": last_trade.get("p"),
+                "change": ticker_data.get("todaysChange"),
+                "change_pct": ticker_data.get("todaysChangePerc"),
+                "source": "polygon",
+            }
+        except Exception as e:
+            logger.error(f"Polygon snapshot error for {ticker}: {e}")
+            return {}
+
+    def fetch_previous_close(self, ticker: str) -> Dict[str, Any]:
+        """Get previous day OHLCV from Polygon."""
+        if not self.enabled:
+            return {}
+        try:
+            url = f"{self.BASE_URL}/v2/aggs/ticker/{ticker.upper()}/prev"
+            resp = requests.get(url, params={"adjusted": "true", "apiKey": self.api_key}, timeout=10)
+            data = resp.json()
+            if data.get("resultsCount", 0) == 0:
+                return {}
+            result = data["results"][0]
+            return {
+                "open": result.get("o"),
+                "high": result.get("h"),
+                "low": result.get("l"),
+                "close": result.get("c"),
+                "volume": result.get("v"),
+                "vwap": result.get("vw"),
+                "source": "polygon",
+            }
+        except Exception as e:
+            logger.error(f"Polygon prev close error for {ticker}: {e}")
+            return {}
+
+
 class NewsConnector:
     """Fetches financial news headlines."""
     NEWSAPI_URL = "https://newsapi.org/v2/everything"
@@ -263,4 +328,5 @@ class NewsConnector:
 # ─── Singleton connectors ────────────────────────────────────────────────────
 yahoo = YahooFinanceConnector()
 alphavantage = AlphaVantageConnector()
+polygon = PolygonConnector()
 news_connector = NewsConnector()

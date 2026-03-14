@@ -4,7 +4,7 @@ Stocks Router: OHLCV data, indicators, fundamentals, market indices.
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 import pandas as pd
-from data.ingestion import yahoo
+from data.ingestion import yahoo, polygon
 from data.pipeline import clean_data, engineer_features
 from data.sentiment import fetch_news_sentiment
 from analytics.patterns import detect_patterns, get_pattern_signals, get_support_resistance
@@ -61,6 +61,43 @@ async def get_stock_data(
         "data_points": len(df),
         "data": df.reset_index().rename(columns={"index": "date"}).to_dict("records"),
     }
+
+
+@router.get("/{ticker}/realtime")
+async def get_realtime_price(ticker: str):
+    """Fetch real-time price snapshot. Uses Polygon.io if available, Yahoo Finance as fallback."""
+    ticker = ticker.upper()
+
+    # Try Polygon first (real-time)
+    snap = polygon.fetch_snapshot(ticker)
+    if snap:
+        return {"ticker": ticker, "source": "polygon_realtime", **snap}
+
+    # Fallback: Yahoo Finance latest quote
+    try:
+        stock_data = yahoo.fetch_ohlcv(ticker, period="2d", interval="1d")
+        if not stock_data.empty:
+            latest = stock_data.iloc[-1]
+            prev = stock_data.iloc[-2] if len(stock_data) > 1 else latest
+            change = float(latest["close"]) - float(prev["close"])
+            change_pct = (change / float(prev["close"])) * 100 if float(prev["close"]) else 0
+            return {
+                "ticker": ticker,
+                "source": "yahoo_finance",
+                "open": round(float(latest["open"]), 2),
+                "high": round(float(latest["high"]), 2),
+                "low": round(float(latest["low"]), 2),
+                "close": round(float(latest["close"]), 2),
+                "volume": int(latest["volume"]),
+                "prev_close": round(float(prev["close"]), 2),
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 3),
+            }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Realtime fallback error for {ticker}: {e}")
+
+    raise HTTPException(status_code=404, detail=f"No real-time data available for {ticker}")
 
 
 @router.get("/{ticker}/fundamentals")
