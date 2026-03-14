@@ -108,15 +108,28 @@ async def get_ai_insights(ticker: str):
     sentiment = fetch_news_sentiment(ticker, days_back=7)
     patterns = get_pattern_signals(df)
 
-    latest = df.iloc[-1]
-    close = float(latest.get("close", 0))
-    prev_close = float(df["close"].iloc[-22]) if len(df) > 22 else close
-    price_change_pct = ((close - prev_close) / prev_close) * 100
+    latest = df.iloc[-1] if not df.empty else {}
+    close = float(latest.get("close", 0)) if latest else 0.0
+    
+    if len(df) > 22:
+        prev_close = float(df["close"].iloc[-22])
+    elif len(df) > 1:
+        prev_close = float(df["close"].iloc[0])
+    else:
+        prev_close = close
+            
+    price_change_pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
 
-    rsi = float(latest.get("rsi_14", 50))
-    macd_pos = float(latest.get("macd", 0)) > 0
-    vol_spike = float(latest.get("volume_ratio", 1)) > 2
-    above_sma = close > float(latest.get("sma_20", close))
+    import pandas as pd
+    rsi = float(latest.get("rsi_14", 50)) if pd.notna(latest.get("rsi_14")) else 50.0
+    macd_val = latest.get("macd", 0)
+    macd_pos = float(macd_val) > 0 if pd.notna(macd_val) else False
+    
+    vol_ratio = latest.get("volume_ratio", 1)
+    vol_spike = float(vol_ratio) > 2 if pd.notna(vol_ratio) else False
+    
+    sma_20 = latest.get("sma_20", close)
+    above_sma = close > float(sma_20) if pd.notna(sma_20) else True
 
     mood = generate_market_mood(
         sentiment["overall_score"], rsi=rsi,
@@ -125,12 +138,16 @@ async def get_ai_insights(ticker: str):
 
     name = fundamentals.get("shortName") or fundamentals.get("longName") or ticker
     
+    sma_50 = latest.get("sma_50", close)
+    bb_pct = latest.get("bb_pct", 0.5)
+    vol_21 = latest.get("volatility_21", 0)
+    
     latest_metrics = {
         "close": close,
-        "sma50": float(latest.get("sma_50", close)),
+        "sma50": float(sma_50) if pd.notna(sma_50) else float(close),
         "rsi_14": rsi,
-        "macd": float(latest.get("macd", 0)),
-        "volume_ratio": float(latest.get("volume_ratio", 1)),
+        "macd": float(macd_val) if pd.notna(macd_val) else 0.0,
+        "volume_ratio": float(vol_ratio) if pd.notna(vol_ratio) else 1.0,
         "price_change_pct": price_change_pct,
     }
 
@@ -145,9 +162,9 @@ async def get_ai_insights(ticker: str):
         "current_price": round(close, 2),
         "rsi_14": round(rsi, 1),
         "macd_positive": macd_pos,
-        "volume_ratio": round(float(latest.get("volume_ratio", 1)), 2),
-        "bb_position": round(float(latest.get("bb_pct", 0.5)), 3),
-        "volatility": round(float(latest.get("volatility_21", 0)) * 100, 2),
+        "volume_ratio": round(float(vol_ratio) if pd.notna(vol_ratio) else 1.0, 2),
+        "bb_position": round(float(bb_pct) if pd.notna(bb_pct) else 0.5, 3),
+        "volatility": round(float(vol_21) if pd.notna(vol_21) else 0.0 * 100, 2),
         "month_return": round(price_change_pct, 2),
     }
 

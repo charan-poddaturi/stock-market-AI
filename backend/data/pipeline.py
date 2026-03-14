@@ -38,7 +38,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """Generate comprehensive technical indicator set."""
-    if df.empty or len(df) < 30:
+    if df is None or df.empty or len(df) < 5:
         return df
 
     df = df.copy()
@@ -173,7 +173,13 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["future_close_21d"] = close.shift(-21)                 # 21-day future close
 
     df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=["close", "rsi_14", "macd"])
+    
+    # Safely drop NaNs only if we have sufficient data rows remaining
+    if len(df) > 30 and "rsi_14" in df.columns and "macd" in df.columns:
+        df = df.dropna(subset=["close", "rsi_14", "macd"])
+
+    # Replace NaNs with 0.0 so FastAPI can serialize to JSON safely
+    df = df.fillna(0.0)
 
     logger.info(f"Feature engineering complete: {df.shape[1]} features, {len(df)} rows")
     return df

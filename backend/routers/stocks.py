@@ -31,21 +31,27 @@ async def get_stock_data(
 
     df = clean_data(df)
     if include_indicators and len(df) >= 30:
-        df = engineer_features(df)
-        # Keep only key columns for API response
-        keep_cols = [
-            "open", "high", "low", "close", "volume",
-            "sma_20", "sma_50", "ema_12", "ema_26",
-            "rsi_14", "macd", "macd_signal", "macd_hist",
-            "bb_upper", "bb_lower", "bb_middle", "bb_pct", "bb_width",
-            "atr_14", "atr_pct", "vwap", "volume_ratio",
-            "volatility_21", "stoch_k", "stoch_d",
-        ]
-        cols_present = [c for c in keep_cols if c in df.columns]
-        df = df[cols_present]
+        try:
+            df = engineer_features(df)
+            # Keep only key columns for API response
+            keep_cols = [
+                "open", "high", "low", "close", "volume",
+                "sma_20", "sma_50", "ema_12", "ema_26",
+                "rsi_14", "macd", "macd_signal", "macd_hist",
+                "bb_upper", "bb_lower", "bb_middle", "bb_pct", "bb_width",
+                "atr_14", "atr_pct", "vwap", "volume_ratio",
+                "volatility_21", "stoch_k", "stoch_d",
+            ]
+            cols_present = [c for c in keep_cols if c in df.columns]
+            df = df[cols_present]
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error engineering features: {e}")
+            # Proceed with raw data if indicators fail
 
     # Convert to list of records
     df = df.round(4)
+    df = df.fillna(0.0)
     df.index = df.index.strftime("%Y-%m-%d %H:%M" if interval != "1d" else "%Y-%m-%d")
 
     return {
