@@ -1,0 +1,55 @@
+# ─── Core ───────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+
+# ─── Database ───────────────────────────────────────────────
+sqlalchemy[asyncio]
+asyncpg
+alembic
+psycopg2-binary
+
+# ─── Cache ──────────────────────────────────────────────────
+redis[asyncio]
+
+# ─── Data & Finance ─────────────────────────────────────────
+yfinance
+pandas
+numpy
+ta
+pandas-ta
+requests
+httpx
+
+# ─── ML ─────────────────────────────────────────────────────
+scikit-learn
+xgboost
+lightgbm
+optuna
+
+# ─── Deep Learning ──────────────────────────────────────────
+torch
+# tensorflow  # Optional - uncomment if needed
+
+# ─── NLP / Sentiment ────────────────────────────────────────
+transformers
+vaderSentiment
+sentencepiece
+
+# ─── Explainability ─────────────────────────────────────────
+shap
+lime
+
+# ─── Viz / Finance Utils ────────────────────────────────────
+plotly
+quantstats
+
+# ─── Utilities ──────────────────────────────────────────────
+python-dotenv
+joblib
+scipy
+aiofiles
+python-jose[cryptography]
+passlib[bcrypt]

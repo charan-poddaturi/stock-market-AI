@@ -1,0 +1,7 @@
+{
+  "/explorer/page": "app/explorer/page.js",
+  "/ai-insights/page": "app/ai-insights/page.js",
+  "/strategy-lab/page": "app/strategy-lab/page.js",
+  "/page": "app/page.js",
+  "/portfolio/page": "app/portfolio/page.js"
+}
