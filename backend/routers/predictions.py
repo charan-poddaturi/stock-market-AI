@@ -28,6 +28,65 @@ def _scaler_path(ticker: str) -> str:
     return f"models/saved/{ticker}_scaler.pkl"
 
 
+def _fallback_from_features(df, current_price: float) -> dict:
+    """
+    Heuristic fallback when no trained models are available.
+
+    Uses recent RSI, price vs SMA20, and short-term returns to
+    generate a probability_up in a smooth but non-trivial way
+    instead of always returning 0.5.
+    """
+    row = df.iloc[-1]
+
+    rsi = float(row.get("rsi_14", 50.0))
+    price_vs_sma20 = float(row.get("price_vs_sma20", 0.0))
+    roc_5 = float(row.get("roc_5", 0.0))
+
+    # Normalize inputs into a small score around 0
+    rsi_component = (rsi - 50.0) / 50.0 * 0.25          # [-0.25, 0.25] roughly
+    trend_component = max(min(price_vs_sma20, 0.1), -0.1) * 1.0  # clamp extreme values
+    mom_component = max(min(roc_5 / 20.0, 0.1), -0.1)   # scale 5‑day % change
+
+    raw_score = rsi_component * 0.5 + trend_component * 0.3 + mom_component * 0.2
+
+    prob_up = 0.5 + raw_score
+    prob_up = float(np.clip(prob_up, 0.05, 0.95))
+
+    # Derive signal similar to ensemble thresholds
+    if prob_up > 0.6:
+        signal = "strong_buy"
+    elif prob_up > 0.52:
+        signal = "buy"
+    elif prob_up < 0.4:
+        signal = "strong_sell"
+    elif prob_up < 0.48:
+        signal = "sell"
+    else:
+        signal = "hold"
+
+    # Simple price targets based on confidence
+    confidence = float(np.clip(abs(prob_up - 0.5) * 2.0, 0.0, 1.0))
+    if current_price > 0:
+        magnitude = (prob_up - 0.5) * 2 * confidence * 0.03  # max ~3% move scaled by confidence
+        price_target_1d = round(current_price * (1 + magnitude), 2)
+        price_target_5d = round(current_price * (1 + magnitude * 2.5), 2)
+        price_target_30d = round(current_price * (1 + magnitude * 8), 2)
+    else:
+        price_target_1d = price_target_5d = price_target_30d = None
+
+    return {
+        "prediction_direction": "up" if prob_up > 0.5 else "down",
+        "probability_up": prob_up,
+        "probability_down": round(1 - prob_up, 4),
+        "confidence_score": round(confidence, 4),
+        "signal": signal,
+        "models_used": 0,
+        "price_target_1d": price_target_1d,
+        "price_target_5d": price_target_5d,
+        "price_target_30d": price_target_30d,
+    }
+
+
 def _prepare_prediction(ticker: str, period: str):
     """Synchronous prediction helper used by async endpoints."""
     cache_key = (ticker.upper(), period)
@@ -70,6 +129,12 @@ def _prepare_prediction(ticker: str, period: str):
         seq_len=seq_len,
         current_price=current_price,
     )
+
+    # If no trained models are available, fall back to a heuristic
+    if result.get("error") == "No trained models found" or result.get("models_used", 0) == 0:
+        heuristic = _fallback_from_features(df, current_price)
+        # Merge heuristic outputs into result so shape stays consistent
+        result.update(heuristic)
 
     # Add market context
     result["current_price"] = current_price
@@ -248,6 +313,10 @@ def _timeframe_sync(ticker: str):
     current_price = float(df["close"].iloc[-1])
 
     result = run_ensemble_prediction(ticker, X_flat, X_seq, len(feature_cols), seq_len, current_price)
+
+    if result.get("error") == "No trained models found" or result.get("models_used", 0) == 0:
+        heuristic = _fallback_from_features(df, current_price)
+        result.update(heuristic)
 
     response = {
         "ticker": ticker,

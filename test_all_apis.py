@@ -2,11 +2,27 @@ import requests
 import sys
 
 BASE_URL = 'http://localhost:8000'
+
+# NOTE:
+# The portfolio router exposes its main simulation endpoint as:
+#   POST /portfolio/simulate
+# not POST /portfolio.
+# This test has been aligned with the actual API so the suite reflects
+# real behaviour of the backend.
 endpoints = [
     ('/stocks/AAPL', 'Stock Data'),
     ('/predict', 'Prediction', 'POST', {'ticker': 'AAPL', 'days': 30, 'model': 'ensemble'}),
     ('/sentiment/AAPL', 'Sentiment'),
-    ('/portfolio', 'Portfolio', 'POST', {'initial_capital': 10000, 'positions': [{'ticker': 'AAPL', 'shares': 10}], 'risk_tolerance': 'medium'}),
+    (
+        '/portfolio/simulate',
+        'Portfolio Simulation',
+        'POST',
+        {
+            'initial_capital': 10000,
+            'positions': [{'ticker': 'AAPL', 'weight': 1.0}],
+            'period': '1y',
+        },
+    ),
     ('/backtest', 'Backtest', 'POST', {'ticker': 'AAPL', 'strategy': 'sma_crossover', 'initial_capital': 10000, 'start_date': '2023-01-01', 'end_date': '2023-12-31', 'params': {}}),
     ('/screen', 'Screener', 'POST', {'filters': {'rsi_max': 30}, 'limit': 10}),
     ('/insights/AAPL', 'Insights')
