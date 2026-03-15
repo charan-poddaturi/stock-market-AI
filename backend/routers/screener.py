@@ -1,11 +1,16 @@
 """Screener Router"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
+import asyncio
 from analytics.screener import StockScreener
+from utils.cache import TTLCache
 
 router = APIRouter()
 _screener = StockScreener()
+
+# Cache screener results to improve response time for repeated filter queries
+_SCREENER_CACHE = TTLCache(ttl_seconds=120, maxsize=200)
 
 
 class ScreenerRequest(BaseModel):
@@ -14,9 +19,13 @@ class ScreenerRequest(BaseModel):
     period: str = "3mo"
 
 
-@router.post("/")
-async def screen_stocks(req: ScreenerRequest):
-    """Screen stocks based on technical and fundamental filters."""
+def _make_screener_key(req: ScreenerRequest) -> Tuple:
+    universe = tuple(req.universe) if req.universe else ()
+    filters = tuple(sorted(req.filters.items()))
+    return (universe, filters, req.period)
+
+
+def _run_screener_sync(req: ScreenerRequest):
     results = _screener.screen(
         filters=req.filters,
         universe=req.universe,
@@ -27,6 +36,19 @@ async def screen_stocks(req: ScreenerRequest):
         "filters_applied": req.filters,
         "results": results,
     }
+
+
+@router.post("/")
+async def screen_stocks(req: ScreenerRequest):
+    """Screen stocks based on technical and fundamental filters."""
+    cache_key = _make_screener_key(req)
+    cached = _SCREENER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = await asyncio.to_thread(_run_screener_sync, req)
+    _SCREENER_CACHE.set(cache_key, result)
+    return result
 
 
 @router.get("/presets")

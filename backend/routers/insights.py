@@ -2,11 +2,13 @@
 from fastapi import APIRouter, HTTPException
 import json
 import logging
+import asyncio
 from data.ingestion import yahoo
 from data.pipeline import clean_data, engineer_features
 from data.sentiment import fetch_news_sentiment, generate_market_mood
 from analytics.patterns import get_pattern_signals
 from config import settings
+from utils.cache import TTLCache
 
 # Initialize Gemini Client
 try:
@@ -21,6 +23,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Cache AI insights per ticker to avoid repeated LLM calls
+_INSIGHTS_CACHE = TTLCache(ttl_seconds=300, maxsize=200)
 
 
 def _generate_gemini_narrative(
@@ -94,22 +99,35 @@ def _fallback_narrative(ticker: str, name: str, m: dict, mood: dict) -> str:
     return ". ".join(parts) + "."
 
 
-@router.get("/{ticker}")
-async def get_ai_insights(ticker: str):
-    """Generate comprehensive AI-powered market narrative."""
-    ticker = ticker.upper()
+def _build_insights(ticker: str):
+    """Build insights payload (blocking)."""
     df = yahoo.fetch_ohlcv(ticker, period="6mo")
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+        raise ValueError(f"No data for {ticker}")
 
     df = clean_data(df)
     df = engineer_features(df)
     fundamentals = yahoo.fetch_fundamentals(ticker)
-    sentiment = fetch_news_sentiment(ticker, days_back=7)
+    # News sentiment can occasionally fail in third-party libs; fall back gracefully
+    try:
+        sentiment = fetch_news_sentiment(ticker, days_back=7)
+    except Exception as e:
+        logger.error(f"News sentiment error for {ticker}: {e}")
+        sentiment = {
+            "ticker": ticker,
+            "overall_score": 0.0,
+            "label": "neutral",
+            "article_count": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "neutral_count": 0,
+            "articles": [],
+        }
     patterns = get_pattern_signals(df)
 
-    latest = df.iloc[-1] if not df.empty else {}
-    close = float(latest.get("close", 0)) if latest else 0.0
+    # df.empty is already checked above, so iloc[-1] is always valid here
+    latest = df.iloc[-1]
+    close = float(latest.get("close", 0.0))
     
     if len(df) > 22:
         prev_close = float(df["close"].iloc[-22])
@@ -131,10 +149,21 @@ async def get_ai_insights(ticker: str):
     sma_20 = latest.get("sma_20", close)
     above_sma = close > float(sma_20) if pd.notna(sma_20) else True
 
-    mood = generate_market_mood(
-        sentiment["overall_score"], rsi=rsi,
-        macd_positive=macd_pos, volume_spike=vol_spike, above_sma=above_sma,
-    )
+    try:
+        mood = generate_market_mood(
+            sentiment["overall_score"],
+            rsi=rsi,
+            macd_positive=macd_pos,
+            volume_spike=vol_spike,
+            above_sma=above_sma,
+        )
+    except Exception as e:
+        logger.error(f"Market mood generation error for {ticker}: {e}")
+        mood = {
+            "mood": "neutral",
+            "composite_score": 0.0,
+            "narrative": "Mixed signals with neutral overall mood.",
+        }
 
     name = fundamentals.get("shortName") or fundamentals.get("longName") or ticker
     
@@ -175,9 +204,9 @@ async def get_ai_insights(ticker: str):
         "narrative": narrative,
         "mood": mood,
         "sentiment": {
-            "score": sentiment["overall_score"],
-            "label": sentiment["label"],
-            "article_count": sentiment["article_count"],
+            "score": sentiment.get("overall_score", 0.0),
+            "label": sentiment.get("label", "neutral"),
+            "article_count": sentiment.get("article_count", 0),
         },
         "patterns": patterns[:5],
         "key_metrics": key_metrics,
@@ -188,3 +217,58 @@ async def get_ai_insights(ticker: str):
         },
         "news": sentiment.get("articles", [])[:5],
     }
+
+
+def _empty_insights(ticker: str) -> dict:
+    """Fallback payload when insights generation fails, so UI still works."""
+    return {
+        "ticker": ticker,
+        "name": ticker,
+        "sector": "Sector N/A",
+        "narrative": "We could not generate a detailed AI insight right now, but market data is available in the Stock Explorer.",
+        "mood": {
+            "mood": "neutral",
+            "composite_score": 0.0,
+            "narrative": "Mixed signals with neutral overall mood.",
+        },
+        "sentiment": {
+            "score": 0.0,
+            "label": "neutral",
+            "article_count": 0,
+        },
+        "patterns": [],
+        "key_metrics": {
+            "current_price": 0.0,
+            "rsi_14": 50.0,
+            "macd_positive": False,
+            "volume_ratio": 1.0,
+            "bb_position": 0.5,
+            "volatility": 0.0,
+            "month_return": 0.0,
+        },
+        "analyst": {
+            "rating": "N/A",
+            "target_price": None,
+            "pe_ratio": None,
+        },
+        "news": [],
+    }
+
+
+@router.get("/{ticker}")
+async def get_ai_insights(ticker: str):
+    """Generate comprehensive AI-powered market narrative."""
+    ticker = ticker.upper()
+    cache_key = (ticker,)
+    cached = _INSIGHTS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        result = await asyncio.to_thread(_build_insights, ticker)
+    except Exception:
+        logger.exception("Insights generation error, returning fallback insights")
+        result = _empty_insights(ticker)
+
+    _INSIGHTS_CACHE.set(cache_key, result)
+    return result

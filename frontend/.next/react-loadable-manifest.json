@@ -4,5 +4,17 @@
     "files": [
       "static/chunks/_app-pages-browser_node_modules_react-plotly_js_react-plotly_js.js"
     ]
+  },
+  "app\\portfolio\\page.tsx -> react-plotly.js": {
+    "id": "app\\portfolio\\page.tsx -> react-plotly.js",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_react-plotly_js_react-plotly_js.js"
+    ]
+  },
+  "app\\strategy-lab\\page.tsx -> react-plotly.js": {
+    "id": "app\\strategy-lab\\page.tsx -> react-plotly.js",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_react-plotly_js_react-plotly_js.js"
+    ]
   }
 }

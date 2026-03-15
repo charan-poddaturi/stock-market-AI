@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { fetchMarketIndices, screenStocks } from '@/lib/api';
+import toast from 'react-hot-toast';
 import { TrendingUp, TrendingDown, BarChart3, Zap, Activity, DollarSign, Globe, Shield } from 'lucide-react';
 
 const WATCHLIST = [
@@ -33,7 +34,12 @@ export default function Dashboard() {
         ]);
         if (indData.status === 'fulfilled') setIndices(indData.value);
         if (screenData.status === 'fulfilled') setOpportunities(screenData.value.results?.slice(0, 5) || []);
-      } catch {}
+        if (indData.status === 'rejected' || screenData.status === 'rejected') {
+          toast.error('Failed to load market overview. Some tiles may be missing.');
+        }
+      } catch {
+        toast.error('Failed to load market overview');
+      }
       setLoading(false);
     };
     load();

@@ -10,12 +10,27 @@ import numpy as np
 import requests
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from config import settings
 import concurrent.futures
 from functools import lru_cache
+import time
+
+from utils.cache import TTLCache
+from utils.currency import convert_price_sync
+from utils.currency import convert_price_sync
 
 logger = logging.getLogger(__name__)
+
+# Simple in-memory cache for recent OHLCV fetches to reduce repeated network calls.
+_OHLCV_CACHE: dict = {}
+_OHLCV_CACHE_TTL = 300  # seconds
+
+# Shared TTL caches for other expensive endpoints
+_FUNDAMENTALS_CACHE = TTLCache(ttl_seconds=600, maxsize=200)
+_OPTIONS_CACHE = TTLCache(ttl_seconds=600, maxsize=200)
+_MARKET_INDICES_CACHE = TTLCache(ttl_seconds=180, maxsize=20)
+_SEARCH_CACHE = TTLCache(ttl_seconds=300, maxsize=200)
 
 
 class YahooFinanceConnector:
@@ -29,6 +44,13 @@ class YahooFinanceConnector:
         start: Optional[str] = None,
         end: Optional[str] = None,
     ) -> pd.DataFrame:
+        """Fetch OHLCV data with a short-lived in-memory cache to avoid re-fetching the same ticker repeatedly."""
+        key = (ticker.upper(), period, interval, start, end)
+        now = time.time()
+        cached = _OHLCV_CACHE.get(key)
+        if cached and now - cached["ts"] < _OHLCV_CACHE_TTL:
+            return cached["df"].copy()
+
         try:
             stock = yf.Ticker(ticker)
             if start and end:
@@ -45,15 +67,31 @@ class YahooFinanceConnector:
             df.columns = [c.lower() for c in df.columns]
             df = df[["open", "high", "low", "close", "volume"]]
             df = df.dropna()
+            
+            # Convert prices to target currency if needed
+            currency = stock.info.get('currency', 'USD')
+            if currency != settings.target_currency:
+                rate = convert_price_sync(1.0, currency)  # get rate for 1 unit
+                if rate != 1.0:  # only if conversion happened
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = df[col] * rate
+            
             logger.info(f"Fetched {len(df)} rows for {ticker} [{interval}]")
+
+            _OHLCV_CACHE[key] = {"ts": now, "df": df.copy()}
             return df
         except Exception as e:
             logger.error(f"Error fetching {ticker}: {e}")
             return pd.DataFrame()
 
     @staticmethod
-    @lru_cache(maxsize=200)
     def fetch_fundamentals(ticker: str) -> Dict[str, Any]:
+        # Cache results for 10 minutes
+        key = (ticker.upper(),)
+        cached = _FUNDAMENTALS_CACHE.get(key)
+        if cached is not None:
+            return cached
+
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -65,13 +103,29 @@ class YahooFinanceConnector:
                 "revenueGrowth", "profitMargins", "currentPrice",
                 "targetMeanPrice", "recommendationMean", "recommendationKey",
             ]
-            return {k: info.get(k) for k in keys}
+            result = {k: info.get(k) for k in keys}
+            
+            # Convert price fields to target currency
+            currency = info.get('currency', 'USD')
+            price_keys = ['currentPrice', 'targetMeanPrice', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow']
+            for key in price_keys:
+                if result.get(key) and currency != settings.target_currency:
+                    result[key] = convert_price_sync(result[key], currency)
+            
+            _FUNDAMENTALS_CACHE.set(key, result)
+            return result
         except Exception as e:
             logger.error(f"Fundamentals error for {ticker}: {e}")
             return {}
 
     @staticmethod
     def fetch_options_data(ticker: str) -> Dict[str, Any]:
+        # Cache results for 10 minutes
+        key = (ticker.upper(),)
+        cached = _OPTIONS_CACHE.get(key)
+        if cached is not None:
+            return cached
+
         try:
             stock = yf.Ticker(ticker)
             expirations = stock.options
@@ -92,13 +146,15 @@ class YahooFinanceConnector:
             put_call_ratio = (
                 puts_summary["total_open_interest"] / max(calls_summary["total_open_interest"], 1)
             )
-            return {
+            result = {
                 "expirations": list(expirations[:5]),
                 "nearest_expiry": expirations[0],
                 "calls": calls_summary,
                 "puts": puts_summary,
                 "put_call_ratio": round(put_call_ratio, 3),
             }
+            _OPTIONS_CACHE.set(key, result)
+            return result
         except Exception as e:
             logger.error(f"Options error for {ticker}: {e}")
             return {}
@@ -106,10 +162,15 @@ class YahooFinanceConnector:
     @staticmethod
     def search_tickers(query: str, limit: int = 10) -> List[Dict]:
         """Search for tickers using yfinance."""
+        key = (query.lower(), limit)
+        cached = _SEARCH_CACHE.get(key)
+        if cached is not None:
+            return cached
+
         try:
             results = yf.Search(query, max_results=limit)
             quotes = results.quotes
-            return [
+            output = [
                 {
                     "symbol": q.get("symbol", ""),
                     "name": q.get("shortname", q.get("longname", "")),
@@ -119,6 +180,8 @@ class YahooFinanceConnector:
                 for q in quotes
                 if q.get("symbol")
             ]
+            _SEARCH_CACHE.set(key, output)
+            return output
         except Exception as e:
             logger.error(f"Search error: {e}")
             return []
@@ -126,6 +189,11 @@ class YahooFinanceConnector:
     @staticmethod
     def fetch_market_indices() -> Dict[str, Any]:
         """Fetch major market indices concurrently."""
+        key = ("market_indices",)
+        cached = _MARKET_INDICES_CACHE.get(key)
+        if cached is not None:
+            return cached
+
         indices = {
             "S&P 500": "^GSPC",
             "NASDAQ": "^IXIC",
@@ -160,6 +228,8 @@ class YahooFinanceConnector:
                 name, data = future.result()
                 if data:
                     results[name] = data
+
+        _MARKET_INDICES_CACHE.set(key, results)
         return results
 
 

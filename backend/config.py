@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     sequence_length: int = 60
     prediction_horizons: list = [1, 7, 30]
 
+    # Currency (set to USD so charts match common web quotes like Google/Brave)
+    target_currency: str = "USD"
+
     # CORS
     cors_origins: list = [
         "http://localhost:3000",

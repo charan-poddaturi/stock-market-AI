@@ -1,10 +1,15 @@
 """Portfolio Router"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Tuple
+import asyncio
 from analytics.portfolio import PortfolioSimulator
+from utils.cache import TTLCache
 
 router = APIRouter()
+
+# Cache portfolio simulation results for short-lived response caching
+_PORTFOLIO_CACHE = TTLCache(ttl_seconds=120, maxsize=200)
 
 
 class Position(BaseModel):
@@ -18,21 +23,37 @@ class PortfolioRequest(BaseModel):
     period: str = "1y"
 
 
+def _portfolio_key(req: PortfolioRequest) -> Tuple:
+    positions = tuple(sorted([(p.ticker.upper(), p.weight) for p in req.positions]))
+    return (positions, req.initial_capital, req.period)
+
+
+def _run_portfolio_sync(req: PortfolioRequest):
+    sim = PortfolioSimulator(initial_capital=req.initial_capital)
+    result = sim.simulate(
+        positions=[{"ticker": p.ticker.upper(), "weight": p.weight} for p in req.positions],
+        period=req.period,
+    )
+    return result
+
+
 @router.post("/simulate")
 async def simulate_portfolio(req: PortfolioRequest):
     """Run portfolio simulation with risk metrics."""
     if not req.positions:
         raise HTTPException(status_code=400, detail="No positions provided")
 
-    sim = PortfolioSimulator(initial_capital=req.initial_capital)
-    result = sim.simulate(
-        positions=[{"ticker": p.ticker.upper(), "weight": p.weight} for p in req.positions],
-        period=req.period,
-    )
+    cache_key = _portfolio_key(req)
+    cached = _PORTFOLIO_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = await asyncio.to_thread(_run_portfolio_sync, req)
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
+    _PORTFOLIO_CACHE.set(cache_key, result)
     return result
 
 

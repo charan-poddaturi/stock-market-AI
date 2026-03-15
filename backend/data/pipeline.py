@@ -203,8 +203,14 @@ def normalize_features(
     scaler_type: str = "standard",
     scaler_path: Optional[str] = None,
     fit: bool = True,
+    force_fit: bool = False,
 ) -> Tuple[pd.DataFrame, object]:
-    """Normalize features using StandardScaler or MinMaxScaler."""
+    """Normalize features using StandardScaler or MinMaxScaler.
+
+    - If `scaler_path` exists and `fit` is False, the saved scaler is loaded.
+    - If `scaler_path` exists and `fit` is True, the scaler is loaded if available.
+    - If no scaler is available, it will fit a new scaler and optionally save it.
+    """
     df = df.copy()
 
     if scaler_type == "minmax":
@@ -212,14 +218,23 @@ def normalize_features(
     else:
         scaler = StandardScaler()
 
-    if scaler_path and os.path.exists(scaler_path) and not fit:
-        scaler = joblib.load(scaler_path)
-        df[feature_cols] = scaler.transform(df[feature_cols].fillna(0))
-    else:
-        df[feature_cols] = scaler.fit_transform(df[feature_cols].fillna(0))
-        if scaler_path:
-            os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
+    if scaler_path and os.path.exists(scaler_path) and not force_fit:
+        try:
+            scaler = joblib.load(scaler_path)
+            df[feature_cols] = scaler.transform(df[feature_cols].fillna(0))
+            return df, scaler
+        except Exception:
+            # Fall back to refitting if loading fails
+            pass
+
+    # Fit a new scaler (or force-fit) and optionally persist it
+    df[feature_cols] = scaler.fit_transform(df[feature_cols].fillna(0))
+    if scaler_path:
+        os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
+        try:
             joblib.dump(scaler, scaler_path)
+        except Exception:
+            logger.warning(f"Failed to save scaler to {scaler_path}")
 
     return df, scaler
 

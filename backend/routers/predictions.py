@@ -4,6 +4,7 @@ Predictions Router: ML/DL model training, prediction, and model comparison.
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List
+import asyncio
 import numpy as np
 import logging
 from data.ingestion import yahoo
@@ -12,43 +13,43 @@ from ml.classical import train_all_classifiers
 from ml.deep_learning import build_model, train_model, save_model, load_model, predict_model
 from ml.ensemble import run_ensemble_prediction, compare_models
 from config import settings
+from utils.cache import TTLCache
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-
-class PredictRequest(BaseModel):
-    ticker: str
-    period: str = "2y"
-    model: str = "ensemble"  # ensemble, lstm, xgboost, random_forest, etc.
-    retrain: bool = False
+# Cache prediction results for quick repeated UI interactions
+_PREDICTION_CACHE = TTLCache(ttl_seconds=60, maxsize=200)
+_MODEL_COMPARISON_CACHE = TTLCache(ttl_seconds=300, maxsize=100)
+_TIMEFRAME_CACHE = TTLCache(ttl_seconds=60, maxsize=200)
 
 
-class TrainRequest(BaseModel):
-    ticker: str
-    period: str = "2y"
-    epochs: int = 30
-    model_types: List[str] = ["lstm", "xgboost", "random_forest", "lightgbm"]
+def _scaler_path(ticker: str) -> str:
+    return f"models/saved/{ticker}_scaler.pkl"
 
 
-@router.post("/")
-async def predict(req: PredictRequest):
-    """Run prediction for a ticker using specified model."""
-    ticker = req.ticker.upper()
+def _prepare_prediction(ticker: str, period: str):
+    """Synchronous prediction helper used by async endpoints."""
+    cache_key = (ticker.upper(), period)
+    cached = _PREDICTION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
-    # Fetch and process data
-    df = yahoo.fetch_ohlcv(ticker, period=req.period)
+    df = yahoo.fetch_ohlcv(ticker, period=period)
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+        raise ValueError(f"No data for {ticker}")
 
     df = clean_data(df)
     df = engineer_features(df)
 
     if len(df) < settings.sequence_length + 10:
-        raise HTTPException(status_code=400, detail="Insufficient data for prediction")
+        raise ValueError("Insufficient data for prediction")
 
     feature_cols = get_feature_columns(df, exclude_targets=True)
-    df_norm, scaler = normalize_features(df, feature_cols, fit=True)
+    scaler_path = _scaler_path(ticker)
+    df_norm, _ = normalize_features(
+        df, feature_cols, fit=False, scaler_path=scaler_path
+    )
 
     # Latest data for prediction
     X_flat = df_norm[feature_cols].fillna(0).values[-1:].reshape(1, -1)
@@ -75,71 +76,126 @@ async def predict(req: PredictRequest):
     result["latest_rsi"] = round(float(df.get("rsi_14", df["close"]).iloc[-1]), 2)
     result["ticker"] = ticker
 
+    _PREDICTION_CACHE.set(cache_key, result)
     return result
+
+
+class PredictRequest(BaseModel):
+    ticker: str
+    period: str = "2y"
+    model: str = "ensemble"  # ensemble, lstm, xgboost, random_forest, etc.
+    retrain: bool = False
+
+
+class TrainRequest(BaseModel):
+    ticker: str
+    period: str = "2y"
+    epochs: int = 30
+    model_types: List[str] = ["lstm", "xgboost", "random_forest", "lightgbm"]
+
+    def validate(self) -> None:
+        if not self.ticker or not self.ticker.strip():
+            raise HTTPException(status_code=400, detail="Ticker is required")
+        if self.epochs <= 0:
+            raise HTTPException(status_code=400, detail="Epochs must be positive")
+        if self.epochs > 100:
+            raise HTTPException(status_code=400, detail="Epochs must not exceed 100 for safety")
+
+
+@router.post("/")
+async def predict(req: PredictRequest):
+    """Run prediction for a ticker using specified model."""
+    ticker = req.ticker.upper()
+
+    try:
+        result = await asyncio.to_thread(_prepare_prediction, ticker, req.period)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("No data"):
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception as e:
+        logger.exception("Prediction execution failed")
+        raise HTTPException(status_code=500, detail="Prediction failed")
+
+    return result
+
+
+def _train_sync(ticker: str, period: str, epochs: int, model_types: List[str]):
+    """Synchronous training runner used via a worker thread."""
+    try:
+        df = yahoo.fetch_ohlcv(ticker, period=period)
+        if df.empty:
+            logger.error(f"No data for {ticker}")
+            return
+
+        df = clean_data(df)
+        df = engineer_features(df)
+        feature_cols = get_feature_columns(df, exclude_targets=True)
+
+        # Classical ML
+        X = df[feature_cols].fillna(0).values
+        y = df["target_1d"].fillna(0).values
+        split = int(len(X) * 0.8)
+        train_results = train_all_classifiers(X[:split], y[:split], ticker)
+        logger.info(f"Classical training complete for {ticker}: {train_results}")
+
+        # Deep Learning
+        seq_len = settings.sequence_length
+        scaler_path = _scaler_path(ticker)
+        df_norm, _ = normalize_features(
+            df, feature_cols, fit=True, force_fit=True, scaler_path=scaler_path
+        )
+        X_seq, y_seq = prepare_sequences(df_norm, feature_cols, "target_1d", seq_len)
+        if len(X_seq) > 50:
+            split_seq = int(len(X_seq) * 0.8)
+            X_tr, X_val = X_seq[:split_seq], X_seq[split_seq:]
+            y_tr, y_val = y_seq[:split_seq], y_seq[split_seq:]
+
+            for model_name in ["lstm", "gru", "transformer"]:
+                if model_name in model_types:
+                    try:
+                        model = build_model(model_name, input_size=len(feature_cols), seq_len=seq_len)
+                        train_model(model, X_tr, y_tr, X_val, y_val, epochs=epochs)
+                        save_model(model, ticker, model_name)
+                        logger.info(f"Trained {model_name} for {ticker}")
+                    except Exception as e:
+                        logger.error(f"DL training error {model_name}: {e}")
+
+    except Exception as e:
+        logger.error(f"Training pipeline error: {e}")
 
 
 @router.post("/train")
 async def train_models(req: TrainRequest, background_tasks: BackgroundTasks):
     """Train all models for a ticker (can be slow, runs in background)."""
+    req.validate()
     ticker = req.ticker.upper()
-
-    async def _train():
-        try:
-            df = yahoo.fetch_ohlcv(ticker, period=req.period)
-            if df.empty:
-                logger.error(f"No data for {ticker}")
-                return
-
-            df = clean_data(df)
-            df = engineer_features(df)
-            feature_cols = get_feature_columns(df, exclude_targets=True)
-
-            # Classical ML
-            X = df[feature_cols].fillna(0).values
-            y = df["target_1d"].fillna(0).values
-            split = int(len(X) * 0.8)
-            train_results = train_all_classifiers(X[:split], y[:split], ticker)
-            logger.info(f"Classical training complete for {ticker}: {train_results}")
-
-            # Deep Learning
-            seq_len = settings.sequence_length
-            df_norm, _ = normalize_features(df, feature_cols, fit=True,
-                                            scaler_path=f"models/saved/{ticker}_scaler.pkl")
-            X_seq, y_seq = prepare_sequences(df_norm, feature_cols, "target_1d", seq_len)
-            if len(X_seq) > 50:
-                split_seq = int(len(X_seq) * 0.8)
-                X_tr, X_val = X_seq[:split_seq], X_seq[split_seq:]
-                y_tr, y_val = y_seq[:split_seq], y_seq[split_seq:]
-
-                for model_name in ["lstm", "gru", "transformer"]:
-                    if model_name in req.model_types:
-                        try:
-                            model = build_model(model_name, input_size=len(feature_cols), seq_len=seq_len)
-                            train_model(model, X_tr, y_tr, X_val, y_val, epochs=req.epochs)
-                            save_model(model, ticker, model_name)
-                            logger.info(f"Trained {model_name} for {ticker}")
-                        except Exception as e:
-                            logger.error(f"DL training error {model_name}: {e}")
-
-        except Exception as e:
-            logger.error(f"Training pipeline error: {e}")
-
-    background_tasks.add_task(_train)
+    background_tasks.add_task(
+        asyncio.to_thread,
+        _train_sync,
+        ticker,
+        req.period,
+        req.epochs,
+        req.model_types,
+    )
     return {"message": f"Training started for {ticker} in background", "ticker": ticker}
 
 
-@router.get("/compare/{ticker}")
-async def compare_model_predictions(ticker: str, period: str = "1y"):
-    """Compare all trained models on test data."""
-    ticker = ticker.upper()
+def _compare_sync(ticker: str, period: str):
+    cache_key = (ticker.upper(), period)
+    cached = _MODEL_COMPARISON_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     df = yahoo.fetch_ohlcv(ticker, period=period)
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+        raise ValueError(f"No data for {ticker}")
 
     df = clean_data(df)
     df = engineer_features(df)
     feature_cols = get_feature_columns(df, exclude_targets=True)
-    df_norm, _ = normalize_features(df, feature_cols, fit=True)
+    df_norm, _ = normalize_features(df, feature_cols, fit=False, scaler_path=_scaler_path(ticker))
 
     X = df_norm[feature_cols].fillna(0).values
     y = df["target_1d"].fillna(0).values
@@ -147,24 +203,44 @@ async def compare_model_predictions(ticker: str, period: str = "1y"):
     X_test, y_test = X[split:], y[split:]
 
     if len(X_test) < 10:
-        raise HTTPException(status_code=400, detail="Insufficient test data")
+        raise ValueError("Insufficient test data")
 
     results = compare_models(ticker, X_test, y_test)
-    return {"ticker": ticker, "model_comparison": results}
+    response = {"ticker": ticker, "model_comparison": results}
+    _MODEL_COMPARISON_CACHE.set(cache_key, response)
+    return response
 
 
-@router.get("/timeframes/{ticker}")
-async def multi_timeframe_prediction(ticker: str):
-    """Generate predictions for 1d, 1w, 1m timeframes."""
+@router.get("/compare/{ticker}")
+async def compare_model_predictions(ticker: str, period: str = "1y"):
+    """Compare all trained models on test data."""
     ticker = ticker.upper()
+    try:
+        return await asyncio.to_thread(_compare_sync, ticker, period)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("No data"):
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception:
+        logger.exception("Model comparison failed")
+        raise HTTPException(status_code=500, detail="Model comparison failed")
+
+
+def _timeframe_sync(ticker: str):
+    cache_key = (ticker.upper(), "timeframes")
+    cached = _TIMEFRAME_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     df = yahoo.fetch_ohlcv(ticker, period="2y")
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+        raise ValueError(f"No data for {ticker}")
 
     df = clean_data(df)
     df = engineer_features(df)
     feature_cols = get_feature_columns(df, exclude_targets=True)
-    df_norm, _ = normalize_features(df, feature_cols, fit=True)
+    df_norm, _ = normalize_features(df, feature_cols, fit=False, scaler_path=_scaler_path(ticker))
 
     seq_len = settings.sequence_length
     X_flat = df_norm[feature_cols].fillna(0).values[-1:].reshape(1, -1)
@@ -173,7 +249,7 @@ async def multi_timeframe_prediction(ticker: str):
 
     result = run_ensemble_prediction(ticker, X_flat, X_seq, len(feature_cols), seq_len, current_price)
 
-    return {
+    response = {
         "ticker": ticker,
         "current_price": current_price,
         "timeframes": {
@@ -198,3 +274,22 @@ async def multi_timeframe_prediction(ticker: str):
         },
         "confidence": result.get("confidence_score"),
     }
+
+    _TIMEFRAME_CACHE.set(cache_key, response)
+    return response
+
+
+@router.get("/timeframes/{ticker}")
+async def multi_timeframe_prediction(ticker: str):
+    """Generate predictions for 1d, 1w, 1m timeframes."""
+    ticker = ticker.upper()
+    try:
+        return await asyncio.to_thread(_timeframe_sync, ticker)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("No data"):
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception:
+        logger.exception("Timeframe prediction failed")
+        raise HTTPException(status_code=500, detail="Timeframe prediction failed")

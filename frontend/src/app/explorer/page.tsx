@@ -1,9 +1,10 @@
 'use client';
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useState, Suspense, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { fetchStockData, fetchPatterns, fetchAnomalies, fetchFundamentals, resolveTicker } from '@/lib/api';
 import { BarChart3, TrendingUp, Activity, AlertTriangle } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
 
@@ -32,7 +33,12 @@ function ExplorerContent() {
       if (sd.status === 'fulfilled') setData(sd.value);
       if (pd.status === 'fulfilled') setPatterns(pd.value);
       if (fd.status === 'fulfilled') setFundamentals(fd.value);
-    } catch {}
+      if (sd.status === 'rejected' || pd.status === 'rejected' || fd.status === 'rejected') {
+        toast.error('Failed to load some stock data. View may be partially incomplete.');
+      }
+    } catch {
+      toast.error('Failed to load stock data');
+    }
     setLoading(false);
   };
 
@@ -57,60 +63,64 @@ function ExplorerContent() {
   const changePct = prevPrice ? (priceChange / prevPrice) * 100 : 0;
   const isPositive = priceChange >= 0;
 
-  const candlestickTrace: any = {
-    type: 'candlestick',
-    x: dates,
-    open: chartData.map((d: any) => d.open),
-    high: chartData.map((d: any) => d.high),
-    low: chartData.map((d: any) => d.low),
-    close: chartData.map((d: any) => d.close),
-    name: ticker,
-    increasing: { line: { color: '#00e676' }, fillcolor: 'rgba(0,230,118,0.3)' },
-    decreasing: { line: { color: '#ff4757' }, fillcolor: 'rgba(255,71,87,0.3)' },
-  };
+  const { plotData, layout } = useMemo(() => {
+    const candlestickTrace: any = {
+      type: 'candlestick',
+      x: dates,
+      open: chartData.map((d: any) => d.open),
+      high: chartData.map((d: any) => d.high),
+      low: chartData.map((d: any) => d.low),
+      close: chartData.map((d: any) => d.close),
+      name: ticker,
+      increasing: { line: { color: '#00e676' }, fillcolor: 'rgba(0,230,118,0.3)' },
+      decreasing: { line: { color: '#ff4757' }, fillcolor: 'rgba(255,71,87,0.3)' },
+    };
 
-  const indicatorTraces = activeIndicators.map(ind => ({
-    type: 'scatter',
-    x: dates,
-    y: chartData.map((d: any) => d[ind]),
-    name: ind.toUpperCase().replace('_', ' '),
-    line: { width: 1.5, dash: ind.includes('bb') ? 'dot' : 'solid' },
-    opacity: 0.8,
-  }));
+    const indicatorTraces = activeIndicators.map(ind => ({
+      type: 'scatter',
+      x: dates,
+      y: chartData.map((d: any) => d[ind]),
+      name: ind.toUpperCase().replace('_', ' '),
+      line: { width: 1.5, dash: ind.includes('bb') ? 'dot' : 'solid' },
+      opacity: 0.8,
+    }));
 
-  const volumeTrace: any = {
-    type: 'bar',
-    x: dates,
-    y: chartData.map((d: any) => d.volume),
-    name: 'Volume',
-    marker: {
-      color: chartData.map((d: any, i: number) =>
-        i > 0 && d.close > chartData[i - 1].close ? 'rgba(0,230,118,0.4)' : 'rgba(255,71,87,0.4)',
-      ),
-    },
-    yaxis: 'y2',
-  };
+    const volumeTrace: any = {
+      type: 'bar',
+      x: dates,
+      y: chartData.map((d: any) => d.volume),
+      name: 'Volume',
+      marker: {
+        color: chartData.map((d: any, i: number) =>
+          i > 0 && d.close > chartData[i - 1].close ? 'rgba(0,230,118,0.4)' : 'rgba(255,71,87,0.4)',
+        ),
+      },
+      yaxis: 'y2',
+    };
 
-  const layout: any = {
-    paper_bgcolor: 'transparent',
-    plot_bgcolor: 'transparent',
-    font: { color: '#94a3b8', family: 'Inter', size: 11 },
-    xaxis: {
-      gridcolor: 'rgba(255,255,255,0.04)',
-      linecolor: 'rgba(255,255,255,0.08)',
-      tickfont: { size: 10 },
-      rangeslider: { visible: false },
-    },
-    yaxis: {
-      gridcolor: 'rgba(255,255,255,0.04)',
-      linecolor: 'rgba(255,255,255,0.08)',
-      side: 'right',
-    },
-    yaxis2: { overlaying: 'y', side: 'left', showticklabels: false, showgrid: false },
-    legend: { x: 0, y: 1.05, orientation: 'h', font: { size: 10 } },
-    margin: { t: 10, r: 8, b: 40, l: 8 },
-    showlegend: true,
-  };
+    const layout: any = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'transparent',
+      font: { color: '#94a3b8', family: 'Inter', size: 11 },
+      xaxis: {
+        gridcolor: 'rgba(255,255,255,0.04)',
+        linecolor: 'rgba(255,255,255,0.08)',
+        tickfont: { size: 10 },
+        rangeslider: { visible: false },
+      },
+      yaxis: {
+        gridcolor: 'rgba(255,255,255,0.04)',
+        linecolor: 'rgba(255,255,255,0.08)',
+        side: 'right',
+      },
+      yaxis2: { overlaying: 'y', side: 'left', showticklabels: false, showgrid: false },
+      legend: { x: 0, y: 1.05, orientation: 'h', font: { size: 10 } },
+      margin: { t: 10, r: 8, b: 40, l: 8 },
+      showlegend: true,
+    };
+
+    return { plotData: [candlestickTrace, ...indicatorTraces, volumeTrace], layout };
+  }, [chartData, dates, activeIndicators, ticker]);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -180,7 +190,7 @@ function ExplorerContent() {
           <div className="flex items-center justify-center h-full"><div className="spinner" /></div>
         ) : chartData.length > 0 ? (
           <Plot
-            data={[candlestickTrace, ...indicatorTraces, volumeTrace]}
+            data={plotData}
             layout={layout}
             config={{ responsive: true, displayModeBar: false }}
             style={{ width: '100%', height: '100%' }}

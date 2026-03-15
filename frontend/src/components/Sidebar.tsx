@@ -8,9 +8,9 @@ import {
 const navItems = [
   { href: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/explorer', icon: Search, label: 'Stock Explorer' },
-  { href: '/prediction', icon: Brain, label: 'Prediction Panel' },
-  { href: '/strategy-lab', icon: FlaskConical, label: 'Strategy Lab' },
-  { href: '/portfolio', icon: Briefcase, label: 'Portfolio Sim' },
+  { href: '/prediction', icon: Brain, label: 'Price Forecasts' },
+  { href: '/strategy-lab', icon: FlaskConical, label: 'Backtest Strategies' },
+  { href: '/portfolio', icon: Briefcase, label: 'Portfolio Builder' },
   { href: '/ai-insights', icon: Lightbulb, label: 'AI Insights' },
 ];
 

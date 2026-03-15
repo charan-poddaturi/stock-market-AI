@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { simulatePortfolio, getPortfolioPresets, resolveTicker } from '@/lib/api';
 import { Briefcase, Plus, Trash2, RefreshCw } from 'lucide-react';
@@ -63,13 +63,38 @@ export default function PortfolioPage() {
 
   const isPositive = (result?.total_return ?? 0) >= 0;
 
+  const historyChart = useMemo(() => {
+    if (!result?.portfolio_history?.length) return null;
+    const x = result.portfolio_history.map((p: any) => p.date);
+    const y = result.portfolio_history.map((p: any) => p.value);
+    return {
+      data: [{
+        type: 'scatter',
+        mode: 'lines',
+        x,
+        y,
+        fill: 'tozeroy',
+        fillcolor: isPositive ? 'rgba(0,230,118,0.06)' : 'rgba(255,71,87,0.06)',
+        line: { color: isPositive ? '#00e676' : '#ff4757', width: 2 },
+      }],
+      layout: {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94a3b8', family: 'Inter', size: 10 },
+        xaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)' },
+        yaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)', side: 'right', tickprefix: '$', tickformat: ',.0f' },
+        margin: { t: 4, r: 60, b: 35, l: 4 },
+        showlegend: false,
+      },
+    };
+  }, [result, isPositive]);
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-          <Briefcase size={24} style={{ color: '#00d4ff' }} /> Portfolio Simulator
+          <Briefcase size={24} style={{ color: '#00d4ff' }} /> Portfolio Builder
         </h1>
-        <p className="text-slate-400 text-sm mt-1">Simulate multi-asset portfolios with risk analytics</p>
+        <p className="text-slate-400 text-sm mt-1">Build a simple stock portfolio and see how it could perform.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -157,26 +182,12 @@ export default function PortfolioPage() {
               </div>
 
               {/* Portfolio history chart */}
-              {result.portfolio_history?.length > 0 && (
+              {historyChart && (
                 <div className="glass-card p-4" style={{ height: 280 }}>
                   <h3 className="text-sm font-semibold text-white mb-2">Portfolio Value Over Time</h3>
                   <Plot
-                    data={[{
-                      type: 'scatter', mode: 'lines',
-                      x: result.portfolio_history.map((p: any) => p.date),
-                      y: result.portfolio_history.map((p: any) => p.value),
-                      fill: 'tozeroy',
-                      fillcolor: isPositive ? 'rgba(0,230,118,0.06)' : 'rgba(255,71,87,0.06)',
-                      line: { color: isPositive ? '#00e676' : '#ff4757', width: 2 },
-                    }]}
-                    layout={{
-                      paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                      font: { color: '#94a3b8', family: 'Inter', size: 10 },
-                      xaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)' },
-                      yaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)', side: 'right', tickprefix: '$', tickformat: ',.0f' },
-                      margin: { t: 4, r: 60, b: 35, l: 4 },
-                      showlegend: false,
-                    }}
+                    data={historyChart.data}
+                    layout={historyChart.layout}
                     config={{ responsive: true, displayModeBar: false }}
                     style={{ width: '100%', height: '220px' }}
                   />

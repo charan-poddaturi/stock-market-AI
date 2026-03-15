@@ -18,6 +18,9 @@ logger.info(f"DL using device: {DEVICE}")
 
 MODEL_DIR = "models/saved"
 
+# In-memory cache for loaded models to avoid repeated disk I/O
+_DL_MODEL_CACHE: dict = {}
+
 
 # ─── Dataset ──────────────────────────────────────────────────────────────────
 class TimeSeriesDataset(Dataset):
@@ -269,8 +272,19 @@ def load_model(model: nn.Module, ticker: str, model_name: str) -> Optional[nn.Mo
     path = os.path.join(MODEL_DIR, f"{ticker}_{model_name}.pt")
     if not os.path.exists(path):
         return None
+
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+
+    cache_entry = _DL_MODEL_CACHE.get(path)
+    if cache_entry and cache_entry.get("mtime") == mtime:
+        return cache_entry.get("model")
+
     model.load_state_dict(torch.load(path, map_location=DEVICE))
     model.eval()
+    _DL_MODEL_CACHE[path] = {"model": model, "mtime": mtime}
     return model
 
 

@@ -26,10 +26,29 @@ logger = logging.getLogger(__name__)
 
 MODEL_DIR = "models/saved"
 
+# In-memory cache for loaded models to speed up repeated predictions
+_MODEL_CACHE: dict = {}
+
 
 def _model_path(ticker: str, model_name: str) -> str:
     os.makedirs(MODEL_DIR, exist_ok=True)
     return os.path.join(MODEL_DIR, f"{ticker}_{model_name}.pkl")
+
+
+def _load_cached_model(path: str):
+    """Load a model from disk and cache it in memory."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+
+    cached = _MODEL_CACHE.get(path)
+    if cached and cached.get("mtime") == mtime:
+        return cached.get("model")
+
+    model = joblib.load(path)
+    _MODEL_CACHE[path] = {"model": model, "mtime": mtime}
+    return model
 
 
 def train_all_classifiers(
@@ -115,7 +134,9 @@ def predict_all_classifiers(
         if not os.path.exists(path):
             continue
         try:
-            model = joblib.load(path)
+            model = _load_cached_model(path)
+            if model is None:
+                continue
             if hasattr(model, "predict_proba"):
                 proba = model.predict_proba(X)
                 pred = model.predict(X)

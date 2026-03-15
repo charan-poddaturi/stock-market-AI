@@ -51,7 +51,7 @@ open http://localhost:8000/docs   # Swagger API docs
 ```bash
 cd backend
 python -m venv venv
-venv\Scripts\activate          # Windows
+venv\Scripts\activate          
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
@@ -71,7 +71,42 @@ psql -U stockai -d stockai -f backend/db/schema.sql
 
 ---
 
-## 📁 Project Structure
+## ⚙️ Performance & Caching (Recommended)
+
+This project is tuned for speed:
+- **Async endpoints** and **thread offloading** keep the API responsive even under load.
+- **Model caching** keeps ML models and scalers in memory across requests.
+- **Redis cache** (included in Docker) accelerates repeated calls (stock data, predictions, backtests, screener results).
+
+To maximize performance:
+1. Run the backend with multiple workers in production:
+   ```bash
+   cd backend
+   uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+   ```
+2. Build and run the frontend in production mode:
+   ```bash
+   cd frontend
+   npm install
+   npm run build
+   npm run start
+   ```
+3. Keep the `models/saved` directory mounted (Docker does this via `model_cache`) so trained models and scalers are reused.
+4. Use `docker-compose` for a production-like startup (Redis + Postgres pre-configured for caching and persistence).
+
+Minimal smoke checks after startup:
+- Visit `http://localhost:3000` and exercise:
+  - Dashboard tiles and AI Opportunities
+  - Stock Explorer for several tickers/periods
+  - Prediction Panel (Predict, Train, Compare, Multi-TF)
+  - Strategy Lab backtests
+  - Portfolio Simulator runs
+  - AI Insights narratives
+- Confirm `http://localhost:8000/health` returns a healthy status and `http://localhost:8000/docs` loads without errors.
+
+---
+
+## �📁 Project Structure
 
 ```
 ├── backend/
@@ -104,6 +139,13 @@ For premium data, add keys to `.env`:
 | `ALPHA_VANTAGE_KEY` | [alphavantage.co](https://alphavantage.co) | 25 req/day |
 | `POLYGON_KEY` | [polygon.io](https://polygon.io) | 5 req/min |
 | `NEWS_API_KEY` | [newsapi.org](https://newsapi.org) | 100 req/day |
+
+**Global Market Support:**  
+This platform supports stocks from multiple exchanges worldwide via Yahoo Finance.  
+- **US (NASDAQ/NYSE):** Use standard tickers (e.g., `AAPL`, `GOOGL`).  
+- **India (NSE/BSE):** Append `.NS` or `.BO` (e.g., `RELIANCE.NS`, `TCS.BO`).  
+- **Other regions:** Check Yahoo Finance for ticker formats (e.g., `.L` for London, `.TO` for Toronto).  
+No code changes needed — just enter the correct ticker in the UI or API calls.
 
 ---
 

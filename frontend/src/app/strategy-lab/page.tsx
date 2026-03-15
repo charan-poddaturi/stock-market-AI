@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { runBacktest, getStrategies, resolveTicker } from '@/lib/api';
 import { FlaskConical, TrendingUp, TrendingDown, BarChart3, RefreshCw } from 'lucide-react';
@@ -41,13 +41,39 @@ export default function StrategyLabPage() {
   const totalReturn = result?.total_return ?? 0;
   const isPositive = totalReturn >= 0;
 
+  const equityChart = useMemo(() => {
+    if (!result?.portfolio_history?.length) return null;
+    const x = result.portfolio_history.map((p: any) => p.date);
+    const y = result.portfolio_history.map((p: any) => p.value);
+    return {
+      data: [{
+        type: 'scatter',
+        mode: 'lines',
+        x,
+        y,
+        fill: 'tozeroy',
+        fillcolor: isPositive ? 'rgba(0,230,118,0.08)' : 'rgba(255,71,87,0.08)',
+        line: { color: isPositive ? '#00e676' : '#ff4757', width: 2 },
+        name: 'Portfolio Value',
+      }],
+      layout: {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94a3b8', family: 'Inter', size: 11 },
+        xaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)' },
+        yaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)', side: 'right', tickprefix: '$' },
+        margin: { t: 0, r: 60, b: 40, l: 8 },
+        showlegend: false,
+      },
+    };
+  }, [result, isPositive]);
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-          <FlaskConical size={24} style={{ color: '#00d4ff' }} /> Strategy Lab
+          <FlaskConical size={24} style={{ color: '#00d4ff' }} /> Backtest Strategies
         </h1>
-        <p className="text-slate-400 text-sm mt-1">Backtest trading strategies on historical data</p>
+        <p className="text-slate-400 text-sm mt-1">See how simple trading ideas would have performed in the past.</p>
       </div>
 
       {/* Config */}
@@ -115,28 +141,12 @@ export default function StrategyLabPage() {
           </div>
 
           {/* Equity Curve */}
-          {result.portfolio_history?.length > 0 && (
+          {equityChart && (
             <div className="glass-card p-5" style={{ height: 320 }}>
               <h3 className="font-semibold text-white mb-3">Equity Curve</h3>
               <Plot
-                data={[{
-                  type: 'scatter',
-                  mode: 'lines',
-                  x: result.portfolio_history.map((p: any) => p.date),
-                  y: result.portfolio_history.map((p: any) => p.value),
-                  fill: 'tozeroy',
-                  fillcolor: isPositive ? 'rgba(0,230,118,0.08)' : 'rgba(255,71,87,0.08)',
-                  line: { color: isPositive ? '#00e676' : '#ff4757', width: 2 },
-                  name: 'Portfolio Value',
-                }]}
-                layout={{
-                  paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                  font: { color: '#94a3b8', family: 'Inter', size: 11 },
-                  xaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)' },
-                  yaxis: { gridcolor: 'rgba(255,255,255,0.04)', linecolor: 'rgba(255,255,255,0.06)', side: 'right', tickprefix: '$' },
-                  margin: { t: 0, r: 60, b: 40, l: 8 },
-                  showlegend: false,
-                }}
+                data={equityChart.data}
+                layout={equityChart.layout}
                 config={{ responsive: true, displayModeBar: false }}
                 style={{ width: '100%', height: '260px' }}
               />

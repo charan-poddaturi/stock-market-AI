@@ -3,6 +3,7 @@ Stocks Router: OHLCV data, indicators, fundamentals, market indices.
 """
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
+import asyncio
 import pandas as pd
 from data.ingestion import yahoo, polygon
 from data.pipeline import clean_data, engineer_features
@@ -15,19 +16,10 @@ router = APIRouter()
 _anomaly = IsolationForestDetector()
 
 
-@router.get("/{ticker}")
-async def get_stock_data(
-    ticker: str,
-    period: str = Query("1y", description="Data period: 1mo, 3mo, 6mo, 1y, 2y, 5y"),
-    interval: str = Query("1d", description="Data interval: 1d, 1h, 5m"),
-    include_indicators: bool = Query(True),
-):
-    """Fetch OHLCV data with technical indicators."""
-    ticker = ticker.upper()
+def _get_stock_data_sync(ticker: str, period: str, interval: str, include_indicators: bool):
     df = yahoo.fetch_ohlcv(ticker, period=period, interval=interval)
-
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data found for {ticker}")
+        raise ValueError(f"No data found for {ticker}")
 
     df = clean_data(df)
     if include_indicators and len(df) >= 30:
@@ -54,57 +46,84 @@ async def get_stock_data(
     df = df.fillna(0.0)
     df.index = df.index.strftime("%Y-%m-%d %H:%M" if interval != "1d" else "%Y-%m-%d")
 
+    # Reset index and ensure the first column is consistently named "date"
+    df = df.reset_index()
+    if df.columns.size > 0:
+        df.rename(columns={df.columns[0]: "date"}, inplace=True)
+
     return {
         "ticker": ticker,
         "period": period,
         "interval": interval,
         "data_points": len(df),
-        "data": df.reset_index().rename(columns={"index": "date"}).to_dict("records"),
+        "data": df.to_dict("records"),
     }
+
+
+def _get_realtime_price_sync(ticker: str):
+    snap = polygon.fetch_snapshot(ticker)
+    if snap:
+        return {"ticker": ticker, "source": "polygon_realtime", **snap}
+
+    stock_data = yahoo.fetch_ohlcv(ticker, period="2d", interval="1d")
+    if stock_data.empty:
+        raise ValueError(f"No real-time data available for {ticker}")
+
+    latest = stock_data.iloc[-1]
+    prev = stock_data.iloc[-2] if len(stock_data) > 1 else latest
+    change = float(latest["close"]) - float(prev["close"])
+    change_pct = (change / float(prev["close"])) * 100 if float(prev["close"]) else 0
+
+    return {
+        "ticker": ticker,
+        "source": "yahoo_finance",
+        "open": round(float(latest["open"]), 2),
+        "high": round(float(latest["high"]), 2),
+        "low": round(float(latest["low"]), 2),
+        "close": round(float(latest["close"]), 2),
+        "volume": int(latest["volume"]),
+        "prev_close": round(float(prev["close"]), 2),
+        "change": round(change, 2),
+        "change_pct": round(change_pct, 3),
+    }
+
+
+@router.get("/{ticker}")
+async def get_stock_data(
+    ticker: str,
+    period: str = Query("1y", description="Data period: 1mo, 3mo, 6mo, 1y, 2y, 5y"),
+    interval: str = Query("1d", description="Data interval: 1d, 1h, 5m"),
+    include_indicators: bool = Query(True),
+):
+    """Fetch OHLCV data with technical indicators."""
+    ticker = ticker.upper()
+    try:
+        return await asyncio.to_thread(_get_stock_data_sync, ticker, period, interval, include_indicators)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=f"Error fetching data for {ticker}")
 
 
 @router.get("/{ticker}/realtime")
 async def get_realtime_price(ticker: str):
     """Fetch real-time price snapshot. Uses Polygon.io if available, Yahoo Finance as fallback."""
     ticker = ticker.upper()
-
-    # Try Polygon first (real-time)
-    snap = polygon.fetch_snapshot(ticker)
-    if snap:
-        return {"ticker": ticker, "source": "polygon_realtime", **snap}
-
-    # Fallback: Yahoo Finance latest quote
     try:
-        stock_data = yahoo.fetch_ohlcv(ticker, period="2d", interval="1d")
-        if not stock_data.empty:
-            latest = stock_data.iloc[-1]
-            prev = stock_data.iloc[-2] if len(stock_data) > 1 else latest
-            change = float(latest["close"]) - float(prev["close"])
-            change_pct = (change / float(prev["close"])) * 100 if float(prev["close"]) else 0
-            return {
-                "ticker": ticker,
-                "source": "yahoo_finance",
-                "open": round(float(latest["open"]), 2),
-                "high": round(float(latest["high"]), 2),
-                "low": round(float(latest["low"]), 2),
-                "close": round(float(latest["close"]), 2),
-                "volume": int(latest["volume"]),
-                "prev_close": round(float(prev["close"]), 2),
-                "change": round(change, 2),
-                "change_pct": round(change_pct, 3),
-            }
+        return await asyncio.to_thread(_get_realtime_price_sync, ticker)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Realtime fallback error for {ticker}: {e}")
-
-    raise HTTPException(status_code=404, detail=f"No real-time data available for {ticker}")
+        raise HTTPException(status_code=500, detail=f"No real-time data available for {ticker}")
 
 
 @router.get("/{ticker}/fundamentals")
 async def get_fundamentals(ticker: str):
     """Get company fundamentals and info."""
     ticker = ticker.upper()
-    info = yahoo.fetch_fundamentals(ticker)
+    info = await asyncio.to_thread(yahoo.fetch_fundamentals, ticker)
     if not info:
         raise HTTPException(status_code=404, detail=f"Fundamentals not found for {ticker}")
     return {"ticker": ticker, **info}
@@ -114,7 +133,9 @@ async def get_fundamentals(ticker: str):
 async def get_options(ticker: str):
     """Get options chain summary."""
     ticker = ticker.upper()
-    data = yahoo.fetch_options_data(ticker)
+    data = await asyncio.to_thread(yahoo.fetch_options_data, ticker)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Options data not found for {ticker}")
     return {"ticker": ticker, **data}
 
 

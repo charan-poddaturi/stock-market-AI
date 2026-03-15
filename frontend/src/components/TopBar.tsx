@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { Search, Bell, User, Cpu, Zap } from 'lucide-react';
+import { Search, Bell, User } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { resolveTicker } from '@/lib/api';
 
@@ -46,20 +46,10 @@ export default function TopBar() {
         </div>
       </form>
 
-      {/* Status badge */}
+      {/* Status badge (simple, beginner-friendly) */}
       <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium" style={{ background: 'rgba(0,230,118,0.08)', color: '#00e676', border: '1px solid rgba(0,230,118,0.2)' }}>
         <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse-slow" />
         Markets Live
-      </div>
-
-      {/* Mode toggle */}
-      <div className="flex items-center rounded-full p-0.5 text-xs font-medium" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: 'rgba(0,212,255,0.12)', color: '#00d4ff' }}>
-          <Zap size={12} /> Beginner
-        </button>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ color: '#64748b' }}>
-          <Cpu size={12} /> Expert
-        </button>
       </div>
 
       {/* Actions */}

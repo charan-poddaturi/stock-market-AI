@@ -60,7 +60,9 @@ export default function PredictionPage() {
       const data = await compareModels(symbol, period);
       setComparison(data);
       setTab('compare');
-    } catch {}
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || 'Model comparison failed');
+    }
     setLoading(false);
   };
 
@@ -72,7 +74,9 @@ export default function PredictionPage() {
       const data = await getTimeframePredictions(symbol);
       setTimeframes(data);
       setTab('timeframes');
-    } catch {}
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || 'Failed to load timeframe predictions');
+    }
     setLoading(false);
   };
 
